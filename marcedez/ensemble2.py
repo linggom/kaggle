@@ -1,7 +1,15 @@
+
+# coding: utf-8
+
+#
+
+# In[9]:
+
 # This Python 3 environment comes with many helpful analytics libraries installed
 # It is defined by the kaggle/python docker image: https://github.com/kaggle/docker-python
 # For example, here's several helpful packages to load in
-
+import warnings
+warnings.filterwarnings("ignore")
 import numpy as np
 from sklearn.base import BaseEstimator,TransformerMixin, ClassifierMixin
 from sklearn.preprocessing import LabelEncoder
@@ -18,7 +26,12 @@ from sklearn.random_projection import SparseRandomProjection
 from sklearn.decomposition import PCA, FastICA
 from sklearn.decomposition import TruncatedSVD
 from sklearn.metrics import r2_score
+from sklearn.model_selection import train_test_split
 
+
+
+
+# In[10]:
 
 
 class StackingEstimator(BaseEstimator, TransformerMixin):
@@ -42,8 +55,13 @@ class StackingEstimator(BaseEstimator, TransformerMixin):
         return X_transformed
 
 
+# In[11]:
+
+
+
 train = pd.read_csv('data/train.csv')
 test = pd.read_csv('data/test.csv')
+best_results = pd.read_csv('best_results.csv')
 
 for c in train.columns:
     if train[c].dtype == 'object':
@@ -55,29 +73,30 @@ for c in train.columns:
 
 
 n_comp = 12
+random_state=42
 
 # tSVD
-tsvd = TruncatedSVD(n_components=n_comp, random_state=420)
+tsvd = TruncatedSVD(n_components=n_comp, random_state=random_state)
 tsvd_results_train = tsvd.fit_transform(train.drop(["y"], axis=1))
 tsvd_results_test = tsvd.transform(test)
 
 # PCA
-pca = PCA(n_components=n_comp, random_state=420)
+pca = PCA(n_components=n_comp, random_state=random_state)
 pca2_results_train = pca.fit_transform(train.drop(["y"], axis=1))
 pca2_results_test = pca.transform(test)
 
 # ICA
-ica = FastICA(n_components=n_comp, random_state=420)
+ica = FastICA(n_components=n_comp, random_state=random_state)
 ica2_results_train = ica.fit_transform(train.drop(["y"], axis=1))
 ica2_results_test = ica.transform(test)
 
 # GRP
-grp = GaussianRandomProjection(n_components=n_comp, eps=0.1, random_state=420)
+grp = GaussianRandomProjection(n_components=n_comp, eps=0.1, random_state=random_state)
 grp_results_train = grp.fit_transform(train.drop(["y"], axis=1))
 grp_results_test = grp.transform(test)
 
 # SRP
-srp = SparseRandomProjection(n_components=n_comp, dense_output=True, random_state=420)
+srp = SparseRandomProjection(n_components=n_comp, dense_output=True, random_state=random_state)
 srp_results_train = srp.fit_transform(train.drop(["y"], axis=1))
 srp_results_test = srp.transform(test)
 
@@ -110,7 +129,10 @@ id_test = test['ID'].values
 #finaltrainset and finaltestset are data to be used only the stacked model (does not contain PCA, SVD... arrays)
 finaltrainset = train[usable_columns].values
 finaltestset = test[usable_columns].values
-best_results = pd.read_csv('best_results.csv')
+
+
+# In[19]:
+
 
 
 '''Train the xgb model then predict the test data'''
@@ -118,51 +140,82 @@ best_results = pd.read_csv('best_results.csv')
 xgb_params = {
     'n_trees': 520,
     'eta': 0.0045,
-    'max_depth': 6,
-    'colsample_bytree' : 0.7,
-    'min_child_weight' : 1,
+    'max_depth': 5,
     'subsample': 0.93,
     'objective': 'reg:linear',
     'eval_metric': 'rmse',
     'base_score': y_mean, # base prediction = mean(target)
-    'silent': 1
 }
 # NOTE: Make sure that the class is labeled 'class' in the data file
 
-dtrain = xgb.DMatrix(train.drop('y', axis=1), y_train)
-dtest = xgb.DMatrix(test)
-
 num_boost_rounds = 1250
 # train model
-model = xgb.train(dict(xgb_params, silent=0), dtrain, num_boost_round=num_boost_rounds)
-y_pred = model.predict(dtest)
 
 '''Train the stacked models then predict the test data'''
 
 stacked_pipeline = make_pipeline(
     StackingEstimator(estimator=LassoLarsCV(normalize=True)),
     StackingEstimator(estimator=GradientBoostingRegressor(learning_rate=0.001, loss="huber", max_depth=3, max_features=0.55, min_samples_leaf=18, min_samples_split=14, subsample=0.7)),
-    StackingEstimator(RANSACRegressor(random_state=42)),
+#     StackingEstimator(RANSACRegressor(random_state=42)),
     LassoLarsCV(),
-
 )
 
 
-stacked_pipeline.fit(finaltrainset, y_train)
-results = stacked_pipeline.predict(finaltestset)
+
+# In[20]:
+
+train_X, eval_X, train_y, eval_y = train_test_split(finaltrainset, y_train)
+
+dtrain = xgb.DMatrix(train_X, train_y)
+dtest = xgb.DMatrix(eval_X)
+
+
+# In[21]:
+
+stacked_pipeline.fit(train_X, train_y)
+results = stacked_pipeline.predict(train_X)
+
+model = xgb.train(dict(xgb_params, silent=0), dtrain, num_boost_round=num_boost_rounds)
+y_pred = model.predict(dtrain)
+
+
+# In[22]:
 
 '''R2 Score on the entire Train data when averaging'''
-r2s = r2_score(y_train,stacked_pipeline.predict(finaltrainset)*0.2855 + model.predict(dtrain)*0.7145)
+
 print('R2 score on train data:')
-print(r2s)
+print("train : ", r2_score(train_y,stacked_pipeline.predict(train_X)*0.2855 + model.predict(dtrain)*0.7145))
+print("test : ", r2_score(eval_y,stacked_pipeline.predict(eval_X)*0.2855 + model.predict(dtest)*0.7145))
+
+
+# In[23]:
+
+dtrain = xgb.DMatrix(finaltrainset, y_train)
+dtest = xgb.DMatrix(finaltestset)
+
+model = xgb.train(dict(xgb_params, silent=0), dtrain, num_boost_round=num_boost_rounds)
+stacked_pipeline.fit(finaltrainset, y_train)
+
+
+# In[26]:
+
+y_pred = model.predict(dtrain)
+results = stacked_pipeline.predict(finaltrainset)
+print("train : ", r2_score(y_train,stacked_pipeline.predict(finaltrainset)*0.2855 + model.predict(dtrain)*0.7145))
+
+
+# In[30]:
+
+print(r2_score(best_results.y, y_pred*0.75 + results*0.25))
+
+
+# In[28]:
 
 '''Average the preditionon test data  of both models then save it on a csv file'''
+y_pred = model.predict(dtrain)
+results = stacked_pipeline.predict(finaltrainset)
 
 sub = pd.DataFrame()
 sub['ID'] = id_test
 sub['y'] = y_pred*0.75 + results*0.25
-same = r2_score(best_results.y, sub['y'])
-print("on test : ", same)
-file_name = 'results/tacked-models%s.csv' % str(same).replace(".", "_")
-print(file_name)
-sub.to_csv(file_name, index=False)
+sub.to_csv('stacked-models2.csv', index=False)
